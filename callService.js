@@ -1,19 +1,53 @@
+require("dotenv").config();
+
+const generateResponse = require("./aiService");
+const generateVoice = require("./ttsService");
+const makeRealCall = require("./twilioService");
+
 async function makeCalls() {
+    try {
+        console.log("makeCalls function started");
 
-    console.log("TEST: makeCalls is running");
+        // Read numbers from .env
+        const numbers = process.env.CALL_NUMBERS.split(",");
 
-    for (let i = 1; i <= 2; i++) {
+        console.log("Numbers:", numbers);
+        console.log("Starting call process...");
 
-        console.log("Calling number", i);
-
-        await new Promise(resolve =>
-            setTimeout(resolve, 1000)
+        // Step 1 — Generate AI message
+        const aiMessage = await generateResponse(
+            "Create a short greeting message for a customer call."
         );
 
+        console.log("AI Message:");
+        console.log(aiMessage);
+
+        // Step 2 — Generate voice file
+        await generateVoice(aiMessage);
+
+        // Step 3 — Make calls using Twilio
+        for (const number of numbers) {
+            console.log("Calling:", number);
+
+            // REAL CALL
+            await makeRealCall(number);
+
+            console.log("Speaking message:");
+            console.log(aiMessage);
+
+            // Wait 2 seconds between calls
+            await new Promise(resolve =>
+                setTimeout(resolve, 2000)
+            );
+
+            console.log("Call completed:", number);
+        }
+
+        console.log("All calls finished.");
+
+    } catch (error) {
+        console.error("Error in makeCalls:", error.message);
     }
-
-    console.log("TEST: finished");
-
 }
 
 module.exports = makeCalls;
