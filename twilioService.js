@@ -11,16 +11,18 @@ async function makeRealCall(toNumber) {
     try {
         console.log("Attempting call to:", toNumber);
 
+        const baseUrl = process.env.PUBLIC_BASE_URL;
+        if (!baseUrl) {
+            throw new Error(
+                "PUBLIC_BASE_URL is required (example: https://your-ngrok-url.ngrok-free.app)"
+            );
+        }
+
         const call = await client.calls.create({
             to: toNumber,
             from: process.env.TWILIO_PHONE_NUMBER,
-            twiml: `
-                <Response>
-                    <Say>
-                        Hello, this is your AI voice agent test call.
-                    </Say>
-                </Response>
-            `
+            url: `${baseUrl}/voice/intro`,
+            method: "POST"
         });
 
         console.log("Call SID:", call.sid);
