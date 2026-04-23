@@ -3,6 +3,7 @@ require("dotenv").config();
 const generateResponse = require("./aiService");
 const generateVoice = require("./ttsService");
 const makeRealCall = require("./twilioService");
+const customerSupportPrompt = require("./prompt");
 
 async function makeCalls() {
     try {
@@ -14,9 +15,9 @@ async function makeCalls() {
         console.log("Numbers:", numbers);
         console.log("Starting call process...");
 
-        // Step 1 — Generate AI message
+        // Step 1 — Generate AI message using FULL prompt
         const aiMessage = await generateResponse(
-            "Create a short greeting message for a customer call."
+            customerSupportPrompt
         );
 
         console.log("AI Message:");
@@ -29,7 +30,7 @@ async function makeCalls() {
         for (const number of numbers) {
             console.log("Calling:", number);
 
-            // REAL CALL
+            // Make real call
             await makeRealCall(number);
 
             console.log("Speaking message:");
