@@ -1,53 +1,47 @@
-require("dotenv").config();
-
 const generateResponse = require("./aiService");
 const generateVoice = require("./ttsService");
 const makeRealCall = require("./twilioService");
+const { getNumbers } = require("./numbers");
 
 async function makeCalls() {
-    try {
-        console.log("makeCalls function started");
+    console.log("makeCalls function started");
+    const numbers = getNumbers();
+    if (!numbers.length) {
+        throw new Error("No CALL_NUMBERS found in .env");
+    }
 
-        // Read numbers from .env
-        const numbers = process.env.CALL_NUMBERS.split(",");
+    console.log("Numbers:", numbers);
+    console.log("Starting call process...");
 
-        console.log("Numbers:", numbers);
-        console.log("Starting call process...");
+    const aiMessage = await generateResponse(
+        "Create a short greeting message for a customer call."
+    );
+    console.log("AI Message:", aiMessage);
 
-        // Step 1 — Generate AI message
-        const aiMessage = await generateResponse(
-            "Create a short greeting message for a customer call."
-        );
+    await generateVoice(aiMessage);
 
-        console.log("AI Message:");
-        console.log(aiMessage);
-
-        // Step 2 — Generate voice file
-        await generateVoice(aiMessage);
-
-        // Step 3 — Make calls using Twilio
-        for (const number of numbers) {
-            console.log("Calling:", number);
-
-            // REAL CALL
+    let initiated = 0;
+    let failed = 0;
+    for (const number of numbers) {
+        console.log("Calling:", number);
+        try {
             await makeRealCall(number);
-
-            console.log("Speaking message:");
-            console.log(aiMessage);
-
-            // Wait 2 seconds between calls
-            await new Promise(resolve =>
-                setTimeout(resolve, 2000)
-            );
-
-            console.log("Call completed:", number);
+            initiated += 1;
+            console.log("Call initiated:", number);
+        } catch (error) {
+            failed += 1;
+            console.error(`Call failed for ${number}:`, error.message);
         }
 
-        console.log("All calls finished.");
-
-    } catch (error) {
-        console.error("Error in makeCalls:", error.message);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
     }
+
+    console.log("All calls processed.");
+    return {
+        attempted: numbers.length,
+        initiated,
+        failed
+    };
 }
 
 module.exports = makeCalls;
