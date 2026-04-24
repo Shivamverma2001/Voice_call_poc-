@@ -9,12 +9,43 @@ const { getMessage, setMessage } = require("./message");
 const app = express();
 const port = Number(process.env.PORT) || 3000;
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL || "").replace(/\/+$/, "");
+const callState = new Map();
 
 function absoluteUrl(pathname) {
     if (!publicBaseUrl) {
         return pathname;
     }
     return `${publicBaseUrl}${pathname}`;
+}
+
+function getDtmfReply(digits) {
+    switch (digits) {
+        case "1":
+            return "Your order is currently out for delivery and should reach you by tomorrow evening.";
+        case "2":
+            return "I am sorry to hear that. Please tell me your order number after the beep so I can register a damaged or missing item complaint.";
+        case "3":
+            return "Sure. I can help you with a return or refund request. Please tell me your order number after the beep.";
+        case "4":
+            return "I am connecting your request to customer care. Please stay on the line and share your issue after the beep.";
+        default:
+            return "That is not a valid option. Please press 1, 2, 3, or 4.";
+    }
+}
+
+function getFollowupInstruction(digits) {
+    switch (digits) {
+        case "1":
+            return "Please share your order number so I can check your latest delivery status. You can start speaking now.";
+        case "2":
+            return "Please describe what went wrong. Tell me your order number, and whether the item is damaged or missing. You can start speaking now.";
+        case "3":
+            return "Please tell me your order number, the product you want to return, and the reason. You can start speaking now.";
+        case "4":
+            return "You are now connected to customer care. Please explain your issue in brief. You can start speaking now.";
+        default:
+            return "You can speak now, or press another option.";
+    }
 }
 
 app.use(express.json());
@@ -98,7 +129,7 @@ app.all("/voice/intro", (req, res) => {
 
     gather.say(
         { voice: "alice" },
-        "Please tell me how I can help you after the beep."
+        "Please choose an option now. Press 1 for delivery status, press 2 for damaged or missing item, press 3 for return or refund, press 4 to speak with customer care. You can also say your issue after the beep."
     );
 
     twiml.say(
@@ -112,8 +143,39 @@ app.all("/voice/intro", (req, res) => {
     res.send(twiml.toString());
 });
 
+app.all("/voice/listen", (req, res) => {
+    const twiml = new twilio.twiml.VoiceResponse();
+    const callSid = (req.body.CallSid || req.query.CallSid || "").trim();
+    const selectedOption = callSid ? callState.get(callSid)?.menuOption : null;
+
+    const gather = twiml.gather({
+        input: "speech dtmf",
+        action: absoluteUrl("/voice/respond"),
+        method: "POST",
+        speechTimeout: "auto",
+        timeout: 6,
+        actionOnEmptyResult: true
+    });
+
+    if (selectedOption && ["1", "2", "3", "4"].includes(selectedOption)) {
+        gather.say({ voice: "alice" }, getFollowupInstruction(selectedOption));
+    } else {
+        gather.say({ voice: "alice" }, "Please continue. You can speak now or press 1, 2, 3, or 4.");
+    }
+
+    twiml.say(
+        { voice: "alice" },
+        "I did not hear anything. Please call again when you are ready. Goodbye."
+    );
+    twiml.hangup();
+
+    res.type("text/xml");
+    res.send(twiml.toString());
+});
+
 app.post("/voice/respond", async (req, res) => {
     const twiml = new twilio.twiml.VoiceResponse();
+    const callSid = (req.body.CallSid || "").trim();
 
     const speechResult = (req.body.SpeechResult || "").trim();
     const dtmfDigits = (req.body.Digits || "").trim();
@@ -129,7 +191,7 @@ app.post("/voice/respond", async (req, res) => {
 
         twiml.redirect(
             { method: "POST" },
-            absoluteUrl("/voice/intro")
+            absoluteUrl("/voice/listen")
         );
 
         res.type("text/xml");
@@ -137,10 +199,57 @@ app.post("/voice/respond", async (req, res) => {
         return;
     }
 
+    if (dtmfDigits) {
+        if (callSid && ["1", "2", "3", "4"].includes(dtmfDigits)) {
+            callState.set(callSid, { menuOption: dtmfDigits });
+        }
+
+        if (["1", "2", "3", "4"].includes(dtmfDigits)) {
+            // For valid menu selections, directly guide caller and start listening.
+            const gather = twiml.gather({
+                input: "speech dtmf",
+                action: absoluteUrl("/voice/respond"),
+                method: "POST",
+                speechTimeout: "auto",
+                timeout: 6,
+                actionOnEmptyResult: true
+            });
+            gather.say(
+                { voice: "alice" },
+                getFollowupInstruction(dtmfDigits)
+            );
+        } else {
+            const reply = getDtmfReply(dtmfDigits);
+            twiml.say({ voice: "alice" }, reply);
+            twiml.pause({ length: 1 });
+            twiml.redirect(
+                { method: "POST" },
+                absoluteUrl("/voice/listen")
+            );
+        }
+
+        res.type("text/xml");
+        res.send(twiml.toString());
+        return;
+    }
+
     try {
+        const selectedOption = callSid ? callState.get(callSid)?.menuOption : null;
+        let aiPrompt;
+
+        if (selectedOption === "2") {
+            aiPrompt = `You are a phone support assistant handling damaged or missing item complaints. Caller said: "${userInput}". Reply in 1 to 2 short sentences. Ask one useful next question (order number, item name, or delivery date).`;
+        } else if (selectedOption === "3") {
+            aiPrompt = `You are a phone support assistant handling return/refund requests. Caller said: "${userInput}". Reply in 1 to 2 short sentences. Ask one useful next question (order number, reason for return, or product condition).`;
+        } else if (selectedOption === "4") {
+            aiPrompt = `You are a customer care assistant. Caller said: "${userInput}". Reply politely in 1 to 2 short sentences and ask one clear next question to continue support.`;
+        } else {
+            aiPrompt = `You are on a live phone call. Keep the response under 2 short sentences. Caller said: ${userInput}`;
+        }
+
         const aiReply =
             await generateResponse(
-                `You are on a live phone call. Keep the response under 2 short sentences. Caller said: ${userInput}`
+                aiPrompt
             );
 
         twiml.say(
@@ -155,7 +264,7 @@ app.post("/voice/respond", async (req, res) => {
 
         twiml.redirect(
             { method: "POST" },
-            absoluteUrl("/voice/intro")
+            absoluteUrl("/voice/listen")
         );
     } catch (error) {
         console.error(
@@ -176,15 +285,20 @@ app.post("/voice/respond", async (req, res) => {
 });
 
 app.post("/voice/status", (req, res) => {
+    const callSid = (req.body.CallSid || "").trim();
     console.log(
         "Twilio status callback:",
         {
-            callSid: req.body.CallSid,
+            callSid,
             callStatus: req.body.CallStatus,
             to: req.body.To,
             from: req.body.From
         }
     );
+
+    if (callSid && req.body.CallStatus === "completed") {
+        callState.delete(callSid);
+    }
 
     res.sendStatus(204);
 });
