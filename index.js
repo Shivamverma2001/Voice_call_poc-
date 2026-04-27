@@ -50,6 +50,83 @@ function absoluteUrl(pathname) {
 
 }
 
+function shouldEndCall(userInput = "", dtmfDigits = "") {
+    if (dtmfDigits === "9") {
+        return true;
+    }
+
+    const normalized = userInput.trim().toLowerCase();
+    if (!normalized) {
+        return false;
+    }
+
+    // Do not end if caller clearly says issue is NOT resolved.
+    const keepCallOpenPhrases = [
+        "not resolved",
+        "issue not resolved",
+        "not done",
+        "don't end call",
+        "do not end call",
+        "dont end call",
+        "band mat karo",
+        "mat band karo",
+        "abhi mat kato"
+    ];
+    if (keepCallOpenPhrases.some((phrase) => normalized.includes(phrase))) {
+        return false;
+    }
+
+    const closePhrases = [
+        "thank you",
+        "thanks",
+        "bye",
+        "goodbye",
+        "that is all",
+        "that's all",
+        "all good",
+        "issue resolved",
+        "resolved",
+        "done",
+        "no that's it",
+        "no thats it",
+        "no further help",
+        "no more help",
+        "no more questions",
+        "end call",
+        "close this call",
+        "you can hang up"
+    ];
+
+    const closePhrasesHindi = [
+        "dhanyavaad",
+        "shukriya",
+        "bye",
+        "theek hai bas",
+        "ho gaya",
+        "samasya hal ho gayi",
+        "call band karo",
+        "theek hai call band karo"
+    ];
+
+    return closePhrases.some((phrase) => normalized.includes(phrase))
+        || closePhrasesHindi.some((phrase) => normalized.includes(phrase));
+}
+
+const LANGUAGE_BY_DIGIT = {
+    "1": "English",
+    "2": "Hindi",
+    "3": "Telugu",
+    "4": "Tamil",
+    "5": "Kannada"
+};
+
+const MENU_BY_DIGIT = {
+    "1": "delivery status",
+    "2": "damaged or missing item",
+    "3": "return or refund",
+    "4": "customer care support"
+};
+
 app.use(express.json());
 
 app.use(
@@ -218,7 +295,7 @@ app.all(
                 voice:
                     "alice"
             },
-            introMessage
+            `${introMessage} For language selection, press 1 for English, 2 for Hindi, 3 for Telugu, 4 for Tamil, 5 for Kannada. To end the call anytime, press 9.`
         );
 
         twiml.say(
@@ -239,6 +316,35 @@ app.all(
             twiml.toString()
         );
 
+    }
+);
+
+app.all(
+    "/voice/menu",
+    (req, res) => {
+        const twiml = new twilio.twiml.VoiceResponse();
+        const gather = twiml.gather({
+            input: "speech dtmf",
+            action: absoluteUrl("/voice/respond"),
+            method: "POST",
+            speechTimeout: "auto",
+            timeout: 6,
+            actionOnEmptyResult: true
+        });
+
+        gather.say(
+            { voice: "alice" },
+            "Please choose a service option now. Press 1 for delivery status, 2 for damaged or missing item, 3 for return or refund, 4 for customer care. Press 9 to end the call."
+        );
+
+        twiml.say(
+            { voice: "alice" },
+            "No input received. Ending the call now. Goodbye."
+        );
+        twiml.hangup();
+
+        res.type("text/xml");
+        res.send(twiml.toString());
     }
 );
 
@@ -282,6 +388,89 @@ app.post(
             speechResult
             || dtmfDigits;
 
+        // End call anytime with DTMF 9.
+        if (dtmfDigits === "9") {
+            twiml.say(
+                { voice: "alice" },
+                "Thank you. Ending the call as requested. Goodbye."
+            );
+            twiml.hangup();
+            res.type("text/xml");
+            res.send(twiml.toString());
+            return;
+        }
+
+        // Step 1: Language selection
+        if (!currentState.language) {
+            const selectedLanguage = LANGUAGE_BY_DIGIT[dtmfDigits];
+            if (!selectedLanguage) {
+                twiml.say(
+                    { voice: "alice" },
+                    "Please select a language. Press 1 for English, 2 for Hindi, 3 for Telugu, 4 for Tamil, 5 for Kannada. Press 9 to end the call."
+                );
+                twiml.redirect({ method: "POST" }, absoluteUrl("/voice/intro"));
+                res.type("text/xml");
+                res.send(twiml.toString());
+                return;
+            }
+
+            if (callSid) {
+                callState.set(callSid, {
+                    ...currentState,
+                    language: selectedLanguage,
+                    menuOption: null
+                });
+            }
+
+            twiml.say(
+                { voice: "alice" },
+                `You selected ${selectedLanguage}. Now choose a service option. Press 1 for delivery status, 2 for damaged or missing item, 3 for return or refund, 4 for customer care. Press 9 to end the call.`
+            );
+            twiml.redirect({ method: "POST" }, absoluteUrl("/voice/menu"));
+            res.type("text/xml");
+            res.send(twiml.toString());
+            return;
+        }
+
+        // Step 2: Menu selection
+        if (!currentState.menuOption) {
+            const selectedMenu = MENU_BY_DIGIT[dtmfDigits];
+            if (!selectedMenu) {
+                twiml.say(
+                    { voice: "alice" },
+                    "Please choose a valid menu option. Press 1 for delivery status, 2 for damaged or missing item, 3 for return or refund, 4 for customer care. Press 9 to end the call."
+                );
+                twiml.redirect({ method: "POST" }, absoluteUrl("/voice/menu"));
+                res.type("text/xml");
+                res.send(twiml.toString());
+                return;
+            }
+
+            if (callSid) {
+                callState.set(callSid, {
+                    ...currentState,
+                    menuOption: selectedMenu
+                });
+            }
+
+            twiml.say(
+                { voice: "alice" },
+                `You selected ${selectedMenu}. Please explain your issue now. Press 9 anytime to end the call.`
+            );
+            const gather = twiml.gather({
+                input: "speech dtmf",
+                action: absoluteUrl("/voice/respond"),
+                method: "POST",
+                speechTimeout: "auto",
+                timeout: 6,
+                actionOnEmptyResult: true
+            });
+            gather.say({ voice: "alice" }, "I am listening.");
+            res.type("text/xml");
+            res.send(twiml.toString());
+            return;
+        }
+
         console.log(
             "User input:",
             userInput
@@ -289,23 +478,43 @@ app.post(
 
         if (!userInput) {
 
+            const promptText = currentState.menuOption
+                ? "Sorry, I did not catch that. Please repeat your issue. Press 9 to end the call."
+                : "Sorry, I did not catch that. Please select an option. Press 9 to end the call.";
+
+            const gather =
+                twiml.gather({
+                    input:
+                        "speech dtmf",
+                    action:
+                        absoluteUrl(
+                            "/voice/respond"
+                        ),
+                    method:
+                        "POST",
+                    speechTimeout:
+                        "auto",
+                    timeout: 6,
+                    actionOnEmptyResult:
+                        true
+                });
+
+            gather.say(
+                {
+                    voice:
+                        "alice"
+                },
+                promptText
+            );
+
             twiml.say(
                 {
                     voice:
                         "alice"
                 },
-                "Sorry, I did not catch that. Please try again."
+                "No input received. Ending the call now. Goodbye."
             );
-
-            twiml.redirect(
-                {
-                    method:
-                        "POST"
-                },
-                absoluteUrl(
-                    "/voice/intro"
-                )
-            );
+            twiml.hangup();
 
             res.type(
                 "text/xml"
@@ -323,7 +532,7 @@ app.post(
 
             const aiReply =
                 await generateResponse(
-                    `You are a customer support agent. Keep response short. Caller said: ${userInput}`
+                    `You are a customer support agent. Language selected by user: ${currentState.language}. Issue category selected by user: ${currentState.menuOption}. Keep response short and relevant. Caller said: ${userInput}`
                 );
 
             twiml.say(
@@ -342,59 +551,10 @@ app.post(
             //
             // END CALL LOGIC
             //
-
-            const lowerInput =
-                userInput
-                    .toLowerCase();
-
-            const taskCompleted =
-                lowerInput
-                    .includes(
-                        "refund"
-                    )
-                ||
-                lowerInput
-                    .includes(
-                        "return"
-                    )
-                ||
-                lowerInput
-                    .includes(
-                        "complaint"
-                    )
-                ||
-                lowerInput
-                    .includes(
-                        "resolved"
-                    )
-                ||
-                lowerInput
-                    .includes(
-                        "done"
-                    )
-                ||
-                lowerInput
-                    .includes(
-                        "thank"
-                    )
-                ||
-                lowerInput
-                    .includes(
-                        "bye"
-                    );
-
-            const exitPressed =
-                dtmfDigits
-                    === "9";
-
-            if (
-                taskCompleted
-                ||
-                exitPressed
-            ) {
+            if (shouldEndCall(userInput, dtmfDigits)) {
 
                 console.log(
-                    "Ending call — task completed"
+                    "Ending call — user requested closure"
                 );
 
                 twiml.say(
@@ -402,7 +562,7 @@ app.post(
                         voice:
                             "alice"
                     },
-                    "Your request has been completed successfully."
+                    "Thank you. I am ending the call now."
                 );
 
                 twiml.say(
@@ -432,7 +592,7 @@ app.post(
                             "POST"
                     },
                     absoluteUrl(
-                        "/voice/intro"
+                        "/voice/menu"
                     )
                 );
 
@@ -491,6 +651,14 @@ app.post(
                     req.body.From
             }
         );
+
+        const callSid =
+            (req.body.CallSid || "").trim();
+        const callStatus =
+            (req.body.CallStatus || "").trim();
+        if (callSid && callStatus === "completed") {
+            callState.delete(callSid);
+        }
 
         res.sendStatus(
             204
